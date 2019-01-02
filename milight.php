@@ -55,6 +55,7 @@ class milight
 	// the amount to add to fix the "real" hue of the lights (mine were 10 points off)
 	private $iHueShift = 10;
 
+
 	/**
 	 * Change the light color, intensity, mode, etc...
 	 *
@@ -120,6 +121,31 @@ class milight
 		$this->sendMessages($aMessages, str_pad($iZone, 2, "0", STR_PAD_LEFT));
 	}
 
+
+	/**
+	 * Links a new light bulb to the Wifi iBox Controller and sets it to the specified zone
+	 * Use this function within 3 seconds after the light has switched on
+	 *
+	 * @param int $iZone 0 = all, or 1 to 4
+	 */
+	public function linkBulb($iZone)
+	{
+		$this->sendMessages("3D 00 00 08 00 00 00 00 00", str_pad($iZone, 2, "0", STR_PAD_LEFT));
+	}
+
+
+	/**
+	 * Unlinks all linked controllers and/or remotes paired on this zone from the light just switched on
+	 * Use this function within 3 seconds after the light has switched on
+	 *
+	 * @param int $iZone 0 = all, or 1 to 4
+	 */
+	public function unlinkBulb($iZone)
+	{
+		$this->sendMessages("3E 00 00 08 00 00 00 00 00", str_pad($iZone, 2, "0", STR_PAD_LEFT));
+	}
+
+
 	/**
 	 * Sends a list (array) of commands to the wifi box.
 	 *
@@ -166,6 +192,7 @@ class milight
 		socket_close($oSocket);
 	}
 
+
 	/**
 	 * Calculates the checksum for a command
 	 *
@@ -190,4 +217,3 @@ class milight
 			return $sChecksum;
 	}
 }
-
