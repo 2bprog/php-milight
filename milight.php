@@ -1,9 +1,9 @@
 <?php
 /*
-PHP Class to communicate with the MiLight Wifi iBox Controller / iBox2 / v6
+PHP Class to communicate with the MiLight Wifi iBox Controller / iBox1 and iBox2 / v6
 It is loosely based on the Python script by Strontvlieg: https://github.com/Strontvlieg/miLight-V6-iBox2-Domoticz
 
-Compatible with the RGB+CCT bulbs / spots / strips
+Compatible with the RGB+CCT bulbs / spots / strips and the LED of the iBox1 controller
 
 Requires PHP 5.6 or higher
 
@@ -55,9 +55,14 @@ class milight
 	// the amount to add to fix the "real" hue of the lights (mine were 10 points off)
 	private $iHueShift = 10;
 
+	// internal variables - do not edit
+	private $iLastCommand = 0;
+	private $sSessionID1 = "";
+	private $sSessionID2 = "";
+	private $oSocket = null;
 
 	/**
-	 * Change the light color, intensity, mode, etc...
+	 * Change the light color, intensity, mode, etc. for linked LED lamps (not the iBox1 lamp)
 	 *
 	 * @param array $aInput Key/pair with mode/type and value
 	 * @param int $iZone 0 = all, or 1 to 4
@@ -118,7 +123,59 @@ class milight
 			}
 		}
 
-		$this->sendMessages($aMessages, str_pad($iZone, 2, "0", STR_PAD_LEFT));
+		$aSessionIDs = $this->sendMessages($aMessages, str_pad($iZone, 2, "0", STR_PAD_LEFT));
+	}
+
+
+	/**
+	 * Change the light color, intensity, mode, etc. for the INTERNAL iBox1 lamp ONLY
+	 *
+	 * @param string $sMode Mode to set on the lamp, only disco, color and intensity require the $iValue parameter
+	 * @param int $iValue value for disco (1-9), color (1-255) or intensity (0-100)
+	 */
+	public function changeIBoxLight($sMode, $iValue = 0)
+	{
+		$aModeCodes = [
+			"on"        => "03",
+			"off"       => "04",
+			"speedup"   => "02",
+			"speeddown" => "01",
+			"white"     => "05"
+		];
+
+		switch($sMode)
+		{
+			case "on":
+			case "off":
+			case "speedup":
+			case "speeddown":
+			case "white":
+				$this->sendMessages(["31 00 00 00 03 ".$aModeCodes[$sMode]." 00 00 00"], "00");
+				break;
+			case "disco":
+				$this->sendMessages(["31 00 00 00 04 ".str_pad($iValue, 2, "0", STR_PAD_LEFT)." 00 00 00"], "00");
+				break;
+			case "color":
+				$this->sendMessages(["31 00 00 00 01".str_repeat(" ".str_pad(dechex($iValue), 2, "0", STR_PAD_LEFT), 4)], "00");
+				break;
+			case "intensity":
+				$this->sendMessages(["31 00 00 00 02 ".str_pad(dechex($iValue), 2, "0", STR_PAD_LEFT)." 00 00 00"], "00");
+				break;
+		}
+	}
+
+
+	/**
+	 * Method to change the IP-address of the MiLight-controller (in case you have more controllers)
+	 *
+	 * @param string $sIP ip-address of the controller
+	 */
+	public function setController($sIP)
+	{
+		if($this->oSocket) socket_close($this->oSocket);
+		$this->sSessionID1 = $this->sSessionID2 = "";
+
+		$this->sHost = $sIP;
 	}
 
 
@@ -156,21 +213,31 @@ class milight
 	{
 		if(empty($aCommands)) return false;
 
-		$oSocket = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+		if($this->iLastCommand == 0 || (time() - 55) > $this->iLastCommand) $this->sSessionID1 = $this->sSessionID2 = "";
 
-		// kept the spaces for readability
-		$sHexSessionInit = "20 00 00 00 16 02 62 3A D5 ED A3 01 AE 08 2D 46 61 41 A7 F6 DC AF D3 E6 00 00 1E";
-		$sMessage = pack("H*" , str_replace(" ", "", $sHexSessionInit));
+		$this->iLastCommand = time();
 
-		socket_sendto($oSocket, $sMessage, strlen($sMessage), 0, $this->sHost, $this->sPortSend);
+		if(!$this->sSessionID1 && !$this->sSessionID2)
+		{
+			$this->oSocket = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
 
-		socket_recvfrom($oSocket, $sOutput, 1024, 0, $this->sHost, $this->sPortReceive);
+			socket_set_option($this->oSocket, SOL_SOCKET, SO_RCVTIMEO, ["sec" => 1, "usec" => 0]);
+			socket_set_option($this->oSocket, SOL_SOCKET, SO_SNDTIMEO, ["sec" => 1, "usec" => 0]);
 
-		$aSessionMessage = unpack("H*", $sOutput);
-		$sSessionMessage = $aSessionMessage[1];
+			// kept the spaces for readability
+			$sHexSessionInit = "20 00 00 00 16 02 62 3A D5 ED A3 01 AE 08 2D 46 61 41 A7 F6 DC AF D3 E6 00 00 1E";
+			$sMessage = pack("H*" , str_replace(" ", "", $sHexSessionInit));
 
-		$sSessionID1 = substr($sSessionMessage, 38, 2);
-		$sSessionID2 = substr($sSessionMessage, 40, 2);
+			socket_sendto($this->oSocket, $sMessage, strlen($sMessage), 0, $this->sHost, $this->sPortSend);
+
+			socket_recvfrom($this->oSocket, $sOutput, 1024, 0, $this->sHost, $this->sPortReceive);
+
+			$aSessionMessage = unpack("H*", $sOutput);
+			$sSessionMessage = $aSessionMessage[1];
+
+			$this->sSessionID1 = substr($sSessionMessage, 38, 2);
+			$this->sSessionID2 = substr($sSessionMessage, 40, 2);
+		}
 
 		if(is_string($aCommands)) $aCommands = [$aCommands];
 
@@ -180,16 +247,18 @@ class milight
 			$sCycleNr = "00";
 			$sChecksum = $this->calcChecksum($sBulbCommand, $sZone);
 
-			$sFullCommand = "80 00 00 00 11 ".$sSessionID1." ".$sSessionID2." 00 ".$sCycleNr." 00 ".$sBulbCommand." ".$sZone." 00 ".$sChecksum;
+			$sFullCommand = "80 00 00 00 11 ".$this->sSessionID1." ".$this->sSessionID2." 00 ".$sCycleNr." 00 ".$sBulbCommand." ".$sZone." 00 ".$sChecksum;
 
 			$sMessage = pack("H*" , str_replace(" ", "", $sFullCommand));
-			socket_sendto($oSocket, $sMessage, strlen($sMessage), 0, $this->sHost, $this->sPortSend);
+			socket_sendto($this->oSocket, $sMessage, strlen($sMessage), 0, $this->sHost, $this->sPortSend);
 
 			// receive the output, but ignore it for now
-			socket_recvfrom($oSocket, $sOutput, 1024, 0, $this->sHost, $this->sPortReceive);
+			socket_recvfrom($this->oSocket, $sOutput, 1024, 0, $this->sHost, $this->sPortReceive);
 		}
 
-		socket_close($oSocket);
+		//socket_close($this->oSocket);
+
+		return [$this->sSessionID1, $this->sSessionID2];
 	}
 
 
